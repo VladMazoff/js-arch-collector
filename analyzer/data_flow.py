@@ -55,6 +55,8 @@ class DataFlowAnalyzer:
             access_matrix = {}
 
             for func_name, access in func_access.items():
+                if func_name in ("[inline]", "<anonymous>", "<global>", ""):
+                    continue
                 if var_name in access.get("reads", set()):
                     readers.add(func_name)
                 if var_name in access.get("writes", set()):
@@ -130,28 +132,35 @@ class DataFlowAnalyzer:
         # Build function name map: resolve <anonymous> to assigned names
         import re
         func_name_map = {}
+        print(f"[DATA_FLOW] Resolving {len(functions)} functions...")
         for idx, func in enumerate(functions):
-            name = func["name"]
+            name = func.get("name", "<anonymous>")
+            original_name = name
             if name == "<anonymous>":
-                # Try to find assigned name from source (heuristic)
                 loc = func.get("loc")
                 if loc and loc.get("start"):
                     line_idx = loc["start"]["line"] - 1
                     lines = source.split("\n")
                     if 0 <= line_idx < len(lines):
-                        line = lines[line_idx]
-                        # Look for patterns like: const name = (...) or name = function...
-                        m = re.search(r'(?:const|let|var|,)\s*(\w+)\s*[=:]', line)
-                        if m:
-                            name = m.group(1)
-                        else:
-                            # Check previous line
-                            if line_idx > 0:
-                                prev = lines[line_idx - 1]
-                                m = re.search(r'(?:const|let|var|,)\s*(\w+)\s*[=:]', prev)
+                        # Check current line and up to 2 previous lines
+                        for offset in range(0, 3):
+                            check_idx = line_idx - offset
+                            if check_idx >= 0 and check_idx < len(lines):
+                                line = lines[check_idx]
+                                # Match: const name = (, let name = (, var name = (, name = (
+                                m = re.search(r'(?:const|let|var)\s+(\w+)\s*[=:]', line)
                                 if m:
                                     name = m.group(1)
+                                    break
+                                # Match: name = function or name = (
+                                m = re.search(r'(\w+)\s*=\s*(?:function|\()', line)
+                                if m:
+                                    name = m.group(1)
+                                    break
+            if original_name == "<anonymous>" and name != "<anonymous>":
+                print(f"[DATA_FLOW] Resolved anonymous -> {name} (line {func.get('loc', {}).get('start', {}).get('line', '?')})")
             func_name_map[idx] = name
+        print(f"[DATA_FLOW] Function map: {func_name_map}")
 
         # Simple heuristic: parse source line by line
         lines = source.split("\n")

@@ -385,9 +385,14 @@ class ReportGenerator:
         mode = meta.get("mode", "normal")
 
         title = "JS Architecture Analysis" if mode == "normal" else "JS Architecture Analysis — EXTENDED"
+        total_funcs = sum(len(v) for v in report.get("function_groups_detail", {}).values())
+        # Count truly anonymous (no assigned name, no parent resolution)
+        raw_funcs = report.get("functions_raw", [])
+        anon_count = len([f for f in raw_funcs if f.get("name") == "<anonymous>"])
         self.console.print(Panel.fit(
             f"[bold cyan]{title}[/bold cyan]\n"
-            f"[dim]{meta.get('filename', 'N/A')} — {meta.get('generated_at', 'N/A')} — mode: {mode}[/dim]",
+            f"[dim]{meta.get('filename', 'N/A')} — {meta.get('generated_at', 'N/A')} — mode: {mode}[/dim]\n"
+            f"[dim]Functions: {total_funcs} | Anonymous: {anon_count}[/dim]",
             box=box.DOUBLE
         ))
 
@@ -425,10 +430,10 @@ class ReportGenerator:
                 df_table.add_column("Groups", style="magenta")
                 df_table.add_column("Risk", style="bold red")
                 for sd in df_details[:8]:
-                    readers = ", ".join(sd["readers"][:2]) + ("..." if len(sd["readers"]) > 2 else "")
-                    writers = ", ".join(sd["writers"][:2]) + ("..." if len(sd["writers"]) > 2 else "")
-                    groups = ", ".join(sd["groups_involved"][:2])
-                    df_table.add_row(sd["name"], readers, writers, groups, f"{sd['risk_score']}/10")
+                    readers = ", ".join(sd["readers"][:4]) if sd["readers"] else "—"
+                    writers = ", ".join(sd["writers"][:4]) if sd["writers"] else "—"
+                    involved_groups = ", ".join(sd["groups_involved"][:3])
+                    df_table.add_row(sd["name"], readers, writers, involved_groups, f"{sd['risk_score']}/10")
                 self.console.print(df_table)
 
             cross = data_flow.get("cross_group_state", [])

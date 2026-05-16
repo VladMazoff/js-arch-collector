@@ -7,9 +7,16 @@ import networkx as nx
 class CallGraphBuilder:
     """Builds a call graph from AST data."""
 
-    def __init__(self):
+    def __init__(self, debug: bool = False):
         self.graph = nx.DiGraph()
         self.function_map = {}
+        self.debug = debug
+        self._log = []
+
+    def _dbg(self, msg: str):
+        if self.debug:
+            print(f"[CG DEBUG] {msg}")
+        self._log.append(msg)
 
     def build(self, ast_data: Dict[str, Any]) -> Dict[str, Any]:
         self.graph = nx.DiGraph()
@@ -29,10 +36,14 @@ class CallGraphBuilder:
             "orphan_functions": [],
         }
 
-    def build_from_ast(self, ast_obj: Any, functions: List[Dict]) -> Dict[str, Any]:
+    def build_from_ast(self, ast_obj: Any, functions: List[Dict], debug: bool = False) -> Dict[str, Any]:
         """Build call graph using the raw AST object."""
+        self.debug = debug
         self.graph = nx.DiGraph()
         self.function_map = {}
+        self._log = []
+
+        self._dbg(f"Building call graph for {len(functions)} functions")
 
         for func in functions:
             name = func.get("name", "<anonymous>")
@@ -40,10 +51,15 @@ class CallGraphBuilder:
                 self.function_map[name] = func
                 self.graph.add_node(name, **func)
 
-        call_exprs = find_nodes(ast_obj.__dict__, "CallExpression")
-        edges = []
+        self._dbg(f"Function map: {list(self.function_map.keys())}")
 
-        for call in call_exprs:
+        call_exprs = find_nodes(ast_obj.__dict__, "CallExpression")
+        self._dbg(f"Found {len(call_exprs)} CallExpression nodes")
+
+        edges = []
+        skipped = 0
+
+        for idx, call in enumerate(call_exprs):
             call_dict = _to_dict_safe(call)
             callee = call_dict.get("callee")
             caller = self._find_enclosing_function(call, functions)
@@ -53,6 +69,21 @@ class CallGraphBuilder:
                 if callee_name in self.function_map:
                     self.graph.add_edge(caller, callee_name)
                     edges.append({"from": caller, "to": callee_name})
+                    self._dbg(f"  Edge {len(edges)}: {caller} -> {callee_name}")
+                else:
+                    self._dbg(f"  Skip (callee not in function map): {caller} -> {callee_name}")
+                    skipped += 1
+            else:
+                reason = []
+                if not caller:
+                    reason.append("no_caller")
+                if not callee_name:
+                    reason.append("no_callee_name")
+                if caller == callee_name:
+                    reason.append("self_call")
+                self._dbg(f"  Skip call {idx}: {reason}")
+
+        self._dbg(f"Total edges: {len(edges)}, skipped: {skipped}")
 
         god_functions = []
         for node in self.graph.nodes():
@@ -66,13 +97,17 @@ class CallGraphBuilder:
 
         orphan_functions = [n for n in self.graph.nodes() if self.graph.in_degree(n) == 0]
 
-        return {
+        result = {
             "nodes": list(self.graph.nodes(data=True)),
             "edges": edges,
             "god_functions": god_functions,
             "orphan_functions": orphan_functions,
             "total_calls": len(edges),
+            "debug_log": self._log,
         }
+
+        self._dbg(f"God functions: {len(god_functions)}, Orphans: {len(orphan_functions)}")
+        return result
 
     def _find_enclosing_function(self, node, functions: List[Dict]) -> Optional[str]:
         """Find which function contains this call expression."""
@@ -85,13 +120,17 @@ class CallGraphBuilder:
         node_start = _get_attr(start, "line", 0)
 
         best_match = None
+        best_range = 999999
         for func in functions:
             floc = func.get("loc")
             if floc:
                 f_start = floc.get("start", {}).get("line", 0)
                 f_end = floc.get("end", {}).get("line", 999999)
                 if f_start <= node_start <= f_end:
-                    best_match = func.get("name", "<anonymous>")
+                    range_size = f_end - f_start
+                    if range_size < best_range:
+                        best_range = range_size
+                        best_match = func.get("name", "<anonymous>")
         return best_match
 
     def _resolve_callee_name(self, callee: Any) -> Optional[str]:

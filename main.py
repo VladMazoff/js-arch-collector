@@ -1,5 +1,7 @@
-"""Entry point for JS Architecture Collector."""
+"""Entry point for JS Architecture Collector (v1.0)"""
 import argparse
+import io
+import sys
 from pathlib import Path
 from rich.console import Console
 
@@ -12,26 +14,21 @@ from analyzer.state_detector import StateDetector
 from analyzer.function_grouper import FunctionGrouper
 from analyzer.module_detector import ModuleDetector
 from analyzer.report_generator import ReportGenerator
-import io
-import sys
+from analyzer.data_flow import DataFlowAnalyzer
+
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except AttributeError:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-
-
 console = Console()
 
 
-def analyze_file(file_path: Path, html_files: list = None) -> dict:
+def analyze_file(file_path: Path, html_files: list = None, mode: str = "normal") -> dict:
     """Analyze a single JS file."""
     parser = JsEsprimaParser()
     data = parser.parse_file(file_path)
-
-    # Store source for module detector
-    data["source"] = parser.source
 
     # Call graph
     cg_builder = CallGraphBuilder()
@@ -56,6 +53,10 @@ def analyze_file(file_path: Path, html_files: list = None) -> dict:
         for hf in html_files:
             html_info.append(html_extractor.extract(hf))
 
+    # Data Flow Analysis
+    data_flow_analyzer = DataFlowAnalyzer()
+    data_flow = data_flow_analyzer.analyze(data, data["functions"])
+
     # Generate report
     report_gen = ReportGenerator()
     report = report_gen.generate(
@@ -66,12 +67,15 @@ def analyze_file(file_path: Path, html_files: list = None) -> dict:
         call_graph=call_graph,
         filename=file_path.name,
         html_info=html_info,
+        functions_raw=data["functions"],
+        mode=mode,
+        data_flow=data_flow,
     )
 
     return report
 
 
-def analyze_directory(dir_path: Path, html_files: list = None) -> dict:
+def analyze_directory(dir_path: Path, html_files: list = None, mode: str = "normal") -> dict:
     """Analyze all JS files in a directory and aggregate results."""
     js_files = collect_js_files(dir_path)
     if not js_files:
@@ -92,26 +96,21 @@ def analyze_directory(dir_path: Path, html_files: list = None) -> dict:
         console.print(f"  [dim]→ {js_file.relative_to(dir_path)}[/dim]")
         parser = JsEsprimaParser()
         data = parser.parse_file(js_file)
-        data["source"] = parser.source
 
-        # Collect data
         all_functions.extend([{**f, "file": js_file.name} for f in data["functions"]])
         all_globals.extend([{**g, "file": js_file.name} for g in data["globals"]])
         all_assignments.extend([{**a, "file": js_file.name} for a in data["assignments"]])
         all_imports.extend([{**i, "file": js_file.name} for i in data["imports"]])
         all_entry_points.extend([{**e, "file": js_file.name} for e in data["entry_points"]])
 
-        # Call graph per file
         cg_builder = CallGraphBuilder()
         cg = cg_builder.build_from_ast(parser.ast, data["functions"])
         all_call_graphs.append(cg)
 
-        # Module info
         module_detector = ModuleDetector()
         mod_info = module_detector.analyze(data, js_file)
         all_module_info.append(mod_info)
 
-    # Aggregate
     aggregated_data = {
         "file": str(dir_path),
         "functions": all_functions,
@@ -127,7 +126,6 @@ def analyze_directory(dir_path: Path, html_files: list = None) -> dict:
     grouper = FunctionGrouper()
     groups = grouper.group_functions(all_functions, CONFIG)
 
-    # Merge call graphs
     merged_cg = {
         "nodes": [],
         "edges": [],
@@ -141,27 +139,23 @@ def analyze_directory(dir_path: Path, html_files: list = None) -> dict:
         merged_cg["god_functions"].extend(cg.get("god_functions", []))
         merged_cg["total_calls"] += cg.get("total_calls", 0)
 
-    # Deduplicate orphans
     all_orphans = set()
     for cg in all_call_graphs:
         all_orphans.update(cg.get("orphan_functions", []))
     merged_cg["orphan_functions"] = sorted(list(all_orphans))
 
-    # HTML analysis
     html_info = []
     if html_files:
         html_extractor = HtmlExtractor()
         for hf in html_files:
             html_info.append(html_extractor.extract(hf))
 
-    # Determine dominant module system
     module_systems = [m["module_system"] for m in all_module_info]
     dominant = max(set(module_systems), key=module_systems.count) if module_systems else "Unknown"
     has_commonjs = any(m["has_commonjs"] for m in all_module_info)
     has_es6 = any(m["has_es6"] for m in all_module_info)
     has_iife = any(m["has_iife"] for m in all_module_info)
 
-    # Collect all global objects
     all_global_objs = []
     for m in all_module_info:
         all_global_objs.extend(m.get("global_objects", []))
@@ -178,6 +172,10 @@ def analyze_directory(dir_path: Path, html_files: list = None) -> dict:
         "has_iife": has_iife,
     }
 
+    # Data Flow Analysis (simplified for directory)
+    data_flow_analyzer = DataFlowAnalyzer()
+    data_flow = data_flow_analyzer.analyze(aggregated_data, all_functions)
+
     report_gen = ReportGenerator()
     report = report_gen.generate(
         module_info=aggregated_module,
@@ -187,6 +185,9 @@ def analyze_directory(dir_path: Path, html_files: list = None) -> dict:
         call_graph=merged_cg,
         filename=dir_path.name,
         html_info=html_info,
+        functions_raw=all_functions,
+        mode=mode,
+        data_flow=data_flow,
     )
 
     return report
@@ -198,6 +199,8 @@ def main():
     parser.add_argument("--dir", type=str, help="Directory with JS files to analyze")
     parser.add_argument("--html", type=str, help="HTML file(s) to analyze (comma-separated)")
     parser.add_argument("--output", type=str, default=str(CONFIG["output_dir"]), help="Output directory")
+    parser.add_argument("--mode", type=str, choices=["normal", "extended"], default="normal",
+                        help="Report mode: normal (compact) or extended (LLM architect)")
     args = parser.parse_args()
 
     if not args.file and not args.dir:
@@ -205,7 +208,6 @@ def main():
         parser.print_help()
         return
 
-    # Collect HTML files
     html_files = []
     if args.html:
         for hf in args.html.split(","):
@@ -215,29 +217,27 @@ def main():
             else:
                 console.print(f"[yellow]Warning: HTML file not found: {p}[/yellow]")
 
-    # Run analysis
     if args.file:
         path = Path(args.file)
         if not path.exists():
             console.print(f"[red]File not found: {path}[/red]")
             return
         console.print(f"[cyan]Analyzing file: {path.name}[/cyan]")
-        report = analyze_file(path, html_files)
+        report = analyze_file(path, html_files, mode=args.mode)
     else:
         path = Path(args.dir)
         if not path.exists():
             console.print(f"[red]Directory not found: {path}[/red]")
             return
         console.print(f"[cyan]Analyzing directory: {path}[/cyan]")
-        report = analyze_directory(path, html_files)
+        report = analyze_directory(path, html_files, mode=args.mode)
 
-    # Output
     report_gen = ReportGenerator()
     report_gen.print_summary(report)
 
     output_dir = Path(args.output)
     report_gen.save(report, output_dir)
-    #report_gen.save(report, CONFIG["output_dir"])  #<<новый report
+
     console.print("[green]Done![/green]")
 
 

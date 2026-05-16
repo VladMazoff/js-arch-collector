@@ -79,7 +79,7 @@ class JsEsprimaParser:
                         })
         return globals_list
 
-    def _extract_functionsOLD(self) -> List[Dict]:
+    def _extract_functions(self) -> List[Dict]:
         functions = []
         func_nodes = find_nodes(self.ast.__dict__, "FunctionDeclaration")
         func_nodes += find_nodes(self.ast.__dict__, "FunctionExpression")
@@ -116,76 +116,6 @@ class JsEsprimaParser:
                 "generator": node_dict.get("generator", False),
             })
         return functions
-
-    def _extract_functions(self) -> List[Dict]:
-        functions = []
-        print("\n=== DEBUG: Function Extraction ===")
-        
-        for func_type in ["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]:
-            nodes = find_nodes(self.ast.__dict__, func_type)
-            print(f"Found {len(nodes)} {func_type}")
-            
-            for node in nodes:
-                node_type = _get_attr(node, "type")
-                name = None
-                
-                if node_type == "FunctionDeclaration":
-                    name = get_identifier_name(_get_attr(node, "id"))
-                else:  # FunctionExpression / Arrow
-                    name = get_identifier_name(_get_attr(node, "id"))
-                    if not name:
-                        name = self._get_assigned_name(node)
-                
-                # Финальный fallback — попробуем найти по ближайшему VariableDeclarator
-                if not name or name == "<anonymous>":
-                    name = self._get_assigned_name_fallback(node)
-                
-                params = [get_identifier_name(p) for p in _get_attr(node, "params", []) if get_identifier_name(p)]
-                
-                func_info = {
-                    "name": name or "<anonymous>",
-                    "type": node_type,
-                    "params": params,
-                    "loc": get_node_loc(node),
-                    "async": _get_attr(node, "async", False),
-                }
-                functions.append(func_info)
-                
-                print(f" → {node_type:25} | {name or '<anonymous>'}")
-        
-        print(f"Total functions: {len(functions)}\n")
-        return functions
-
-    def _get_assigned_name_fallback(self, node) -> str:
-        """Улучшенный поиск имени для ArrowFunction и FunctionExpression"""
-        # 1. VariableDeclarator (const/let name = () => {})
-        for decl in find_nodes(self.ast.__dict__, "VariableDeclarator"):
-            if _get_attr(decl, "init") is node:
-                return get_identifier_name(_get_attr(decl, "id"))
-
-        # 2. AssignmentExpression (name = () => {})
-        for assign in find_nodes(self.ast.__dict__, "AssignmentExpression"):
-            if _get_attr(assign, "right") is node:
-                return get_identifier_name(_get_attr(assign, "left"))
-
-        # 3. Property в объекте (window.App = { foo: () => {} })
-        for prop in find_nodes(self.ast.__dict__, "Property"):
-            if _get_attr(prop, "value") is node:
-                key = _get_attr(prop, "key")
-                return get_identifier_name(key)
-
-        # 4. CallExpression аргумент (addEventListener('click', () => {}))
-        for call in find_nodes(self.ast.__dict__, "CallExpression"):
-            args = _get_attr(call, "arguments", [])
-            for i, arg in enumerate(args):
-                if arg is node:
-                    callee = get_identifier_name(_get_attr(call, "callee"))
-                    if callee:
-                        return f"{callee}_callback_{i}"
-        
-        return "<anonymous>"
-
-
 
     def _get_assigned_name(self, node) -> Optional[str]:
         """Find the variable name a function expression/arrow is assigned to."""
@@ -229,77 +159,21 @@ class JsEsprimaParser:
                             })
         return imports
 
-
     def _extract_assignments(self) -> List[Dict]:
-        """Расширенное извлечение присваиваний и мутаций"""
         assignments = []
-
-        # 1. Обычные AssignmentExpression
-        for node in find_nodes(self.ast.__dict__, "AssignmentExpression"):
-            left = _get_attr(node, "left")
-            operator = _get_attr(node, "operator")
-            right = _get_attr(node, "right")
-            
-            target = get_identifier_name(left)
-            
+        assign_nodes = find_nodes(self.ast.__dict__, "AssignmentExpression")
+        for node in assign_nodes:
+            node_dict = _to_dict_safe(node)
+            left_name = get_identifier_name(node_dict.get("left"))
+            right = node_dict.get("right")
+            right_type = _get_attr(right, "type") if right else None
             assignments.append({
-                "type": "assignment",
-                "target": target,
-                "operator": operator,
-                "right_type": _get_attr(right, "type"),
-                "loc": get_node_loc(node),
+                "target": left_name,
+                "operator": node_dict.get("operator"),
+                "right_type": right_type,
+                "loc": get_node_loc(node_dict),
             })
-
-        # 2. Мутации через методы (arr.push(), obj.prop = x и т.д.)
-        mutation_methods = {"push", "pop", "shift", "unshift", "splice", "sort", 
-                           "reverse", "fill", "delete", "set", "assign"}
-        
-        for node in find_nodes(self.ast.__dict__, "CallExpression"):
-            callee = _get_attr(node, "callee")
-            if _get_attr(callee, "type") != "MemberExpression":
-                continue
-                
-            obj = _get_attr(callee, "object")
-            prop = _get_attr(callee, "property")
-            
-            obj_name = get_identifier_name(obj)
-            method_name = get_identifier_name(prop)
-            
-            if method_name in mutation_methods and obj_name:
-                assignments.append({
-                    "type": "mutation",
-                    "target": obj_name,
-                    "method": method_name,
-                    "description": f"{obj_name}.{method_name}()",
-                    "loc": get_node_loc(node),
-                })
-
-        # 3. Важный кейс: reassignment с spread / filter / map и т.д.
-        #    Например: selectedRoofs = [...selectedRoofs, ...data]
-        for node in find_nodes(self.ast.__dict__, "AssignmentExpression"):
-            left = _get_attr(node, "left")
-            right = _get_attr(node, "right")
-            
-            target = get_identifier_name(left)
-            right_type = _get_attr(right, "type")
-            
-            # Если справа SpreadElement или CallExpression (filter, map и т.д.)
-            if right_type in ("ArrayExpression", "CallExpression"):
-                # Проверяем, есть ли target внутри right (self-reassignment)
-                right_str = str(right)[:200]  # грубая эвристика
-                if target and target in right_str:
-                    assignments.append({
-                        "type": "reassignment",
-                        "target": target,
-                        "operator": "=",
-                        "right_type": right_type,
-                        "description": "self-reassignment (spread/filter)",
-                        "loc": get_node_loc(node),
-                    })
-
         return assignments
-
-
 
     def _find_entry_points(self) -> List[Dict]:
         entries = []

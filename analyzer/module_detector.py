@@ -11,7 +11,6 @@ class ModuleDetector:
         imports = ast_data.get("imports", [])
         globals_list = ast_data.get("globals", [])
         assignments = ast_data.get("assignments", [])
-        functions = ast_data.get("functions", [])
         source = ast_data.get("source", "")
 
         module_system = self._detect_module_system(imports, ast_data, source)
@@ -28,7 +27,7 @@ class ModuleDetector:
             "bundler": bundler,
             "global_objects": global_objects,
             "import_count": len(imports),
-            "export_count": self._count_exports(ast_data, source),
+            "export_count": self._count_exports(source),
             "has_commonjs": has_commonjs,
             "has_es6": has_es6,
             "has_iife": has_iife,
@@ -75,7 +74,7 @@ class ModuleDetector:
                 globals_found.append({"name": target, "loc": assign.get("loc")})
         return globals_found
 
-    def _count_exports(self, ast_data: Dict, source: str) -> int:
+    def _count_exports(self, source: str) -> int:
         count = 0
         if "module.exports" in source:
             count += source.count("module.exports")

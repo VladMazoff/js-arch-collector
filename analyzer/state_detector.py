@@ -1,114 +1,80 @@
-"""Detect mutable state variables — improved for architecture analysis."""
+"""Detect mutable state variables."""
 from typing import Dict, List, Any
-from collections import Counter, defaultdict
+from collections import Counter
 from config import CONFIG
-from utils.ast_helpers import _get_attr, get_identifier_name
+from utils.ast_helpers import _to_dict_safe, _get_attr
 
 
 class StateDetector:
     """Finds the most mutated variables (potential state)."""
 
     def find_mutable_state(self, ast_data: Dict[str, Any]) -> List[Dict]:
+        """Returns top-N most mutated objects/variables."""
         assignments = ast_data.get("assignments", [])
         globals_list = ast_data.get("globals", [])
 
         mutation_counter = Counter()
-        mutation_details = defaultdict(lambda: {
-            "locations": [],
-            "operators": [],
-            "methods": [],
-            "update_types": [],
-            "is_global": False,
-        })
-
-        global_names = {g["name"] for g in globals_list}
+        mutation_details = {}
 
         for assign in assignments:
             target = assign.get("target")
-            if not target or not isinstance(target, str):
+            if not target:
                 continue
-
             mutation_counter[target] += 1
-            details = mutation_details[target]
+            if target not in mutation_details:
+                mutation_details[target] = {
+                    "locations": [],
+                    "operators": [],
+                    "right_types": [],
+                }
+            mutation_details[target]["locations"].append(assign.get("loc"))
+            mutation_details[target]["operators"].append(assign.get("operator"))
+            mutation_details[target]["right_types"].append(assign.get("right_type"))
 
-            details["locations"].append(assign.get("loc"))
-            
-            # Оператор или метод
-            op = assign.get("operator")
-            method = assign.get("method")
-            if op:
-                details["operators"].append(op)
-            if method:
-                details["methods"].append(method)
+        global_names = {g["name"] for g in globals_list}
 
-            # Тип обновления
-            assign_type = assign.get("type", "assignment")
-            if assign_type == "mutation":
-                details["update_types"].append(f"mutation.{method}")
-            elif op and op != "=":
-                details["update_types"].append(f"compound.{op}")
-            else:
-                details["update_types"].append("reassignment")
-
-            # Глобальность
-            if (target in global_names or 
-                target.startswith(("window.", "globalThis.")) or 
-                "." in target):
-                details["is_global"] = True
-
-        # Формируем результат
         results = []
-        for var_name, count in mutation_counter.most_common(CONFIG.get("top_state_limit", 15)):
+        for var_name, count in mutation_counter.most_common(CONFIG["top_state_limit"]):
             details = mutation_details[var_name]
-            inferred_type = self._infer_type(var_name, globals_list, details)
+            is_global = var_name in global_names
+            inferred_type = self._infer_type(details["right_types"], globals_list, var_name)
 
             results.append({
                 "name": var_name,
                 "mutation_count": count,
+                "is_global": is_global,
                 "inferred_type": inferred_type,
-                "is_global": details["is_global"],
-                "update_types": list(set(details["update_types"]))[:4],   # лимит
-                "methods": list(set(details["methods"]))[:4],
-                "sample_locations": details["locations"][:2],
+                "operators": list(set(details["operators"])),
+                "locations": details["locations"][:3],
             })
 
         return results
 
-    def _infer_type(self, var_name: str, globals_list: List[Dict], details: Dict) -> str:
-        """Улучшенная типизация переменной"""
-        name_lower = var_name.lower()
-
-        # 1. Прямое объявление в глобальной области
+    def _infer_type(self, right_types: List[str], globals_list: List[Dict], var_name: str) -> str:
         for g in globals_list:
-            if g.get("name") == var_name:
+            if g["name"] == var_name:
                 init = g.get("init_type")
                 if init == "ArrayExpression":
                     return "array"
-                if init == "ObjectExpression":
+                elif init == "ObjectExpression":
                     return "object"
-                if init == "Literal":
+                elif init == "Literal":
                     return "primitive"
-                if init in ("NewExpression", "CallExpression"):
+                elif init == "CallExpression":
                     return "instance"
 
-        # 2. По методам мутации
-        methods = details.get("methods", [])
-        if any(m in ["push", "pop", "shift", "unshift", "splice", "sort"] for m in methods):
-            return "array"
-        if any(m in ["assign"] for m in methods):
-            return "object"
-
-        # 3. По имени переменной (эвристика)
-        if any(x in name_lower for x in ["roofs", "items", "list", "array", "favorites"]):
-            return "array"
-        if any(x in name_lower for x in ["filter", "config", "state", "data", "filters"]):
-            return "object"
-        if any(x in name_lower for x in ["count", "index", "length", "total"]):
-            return "primitive (counter)"
-
-        # 4. По типам обновлений
-        update_types = details.get("update_types", [])
-        if any("compound" in ut for ut in update_types):
-            return "primitive (number)"
-
-        return "object" if "." in var_name else "mixed"
+        type_hints = {
+            "ArrayExpression": "array",
+            "ObjectExpression": "object",
+            "Literal": "primitive",
+            "CallExpression": "instance",
+            "NewExpression": "instance",
+            "BinaryExpression": "primitive",
+            "UnaryExpression": "primitive",
+            "UpdateExpression": "primitive",
+            "SpreadElement": "array",
+        }
+        for rt in right_types:
+            if rt in type_hints:
+                return type_hints[rt]
+        return "unknown"

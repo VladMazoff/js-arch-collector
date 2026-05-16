@@ -90,49 +90,6 @@ def get_node_loc(node: Any) -> Dict:
     }
 
 
-
-
-def find_nodes2(node: Any, node_type: str, max_depth: int = 50) -> List[Any]:
-    """Надёжный рекурсивный поиск нод по типу"""
-    results: List[Any] = []
-    
-    def traverse(current: Any, depth: int = 0):
-        if depth > max_depth or not current:
-            return
-        
-        # === dict case ===
-        if isinstance(current, dict):
-            if current.get("type") == node_type:
-                results.append(current)
-            for value in current.values():
-                if isinstance(value, (dict, list)):
-                    traverse(value, depth + 1)
-            return
-
-        # === esprima object case ===
-        try:
-            curr_type = _get_attr(current, "type")
-            if curr_type == node_type:
-                results.append(current)
-
-            # Основные поля, где могут быть дети
-            for field in ("body", "declarations", "expression", "callee", "arguments", 
-                         "left", "right", "object", "property", "init", "params", 
-                         "elements", "properties", "consequent", "alternate", "block"):
-                child = _get_attr(current, field)
-                if child:
-                    if isinstance(child, list):
-                        for item in child:
-                            traverse(item, depth + 1)
-                    else:
-                        traverse(child, depth + 1)
-        except:
-            pass
-
-    traverse(node)
-    return results
-
-
 def find_nodes(ast_node: Any, node_type: str, _seen=None) -> List[Any]:
     """Recursively find all nodes of a given type in the AST."""
     if _seen is None:

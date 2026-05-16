@@ -4,8 +4,7 @@ BASE_DIR = Path(__file__).parent
 
 CONFIG = {
     "min_function_length": 3,
-    "top_state_limit": 15,                   
-    "state_mutation_threshold": 2,            # можно использовать позже    
+    "state_mutation_threshold": 2,
     "group_prefixes": {
         "UI/Events": ["bind", "handle", "click", "open", "close", "render", "toggle", "initSlider", "updateUI", "show", "hide"],
         "Map/Geo": ["map", "geo", "layer", "marker", "chunk", "loc", "filter", "flyTo", "zoom", "pan"],

@@ -1,5 +1,6 @@
 """Entry point for JS Architecture Collector (v1.0)"""
 import argparse
+from utils.smart_cli import SmartArgumentParser
 import io
 import sys
 from pathlib import Path
@@ -194,7 +195,7 @@ def analyze_directory(dir_path: Path, html_files: list = None, mode: str = "norm
 
 
 def main():
-    parser = argparse.ArgumentParser(description="JS Architecture Collector")
+    parser = SmartArgumentParser(description="JS Architecture Collector")
     parser.add_argument("--file", type=str, help="Single JS file to analyze")
     parser.add_argument("--dir", type=str, help="Directory with JS files to analyze")
     parser.add_argument("--html", type=str, help="HTML file(s) to analyze (comma-separated)")
